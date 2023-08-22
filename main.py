@@ -1,40 +1,90 @@
-import chainlit as cl
-from langchain import HuggingFaceHub, PromptTemplate, LLMChain
-from langchain.chains import RetrievalQA
+from langchain.document_loaders import PyPDFLoader,DirectoryLoader
+from langchain import PromptTemplate
+from langchain.embeddings import HuggingFaceEmbeddings
+from langchain.vectorstores import FAISS
 from langchain.llms import CTransformers
-# Access environment variables
-import os
-# Load environment variables from .env file
-from dotenv import load_dotenv
-load_dotenv('example.env')
+from langchain.chains import RetrievalQA
+import chainlit as cl
 
-huggingfacehub_api_token = os.getenv("HUGGINGFACEHUB_API_TOKEN")
+FaissPath = 'vectorstore/db_faiss'
 
-#
-repo_id = "tiiuae/falcon-7b-instruct"
-llm = HuggingFaceHub(huggingfacehub_api_token=huggingfacehub_api_token,
-                     repo_id=repo_id,
-                     model_kwargs={"temperature":0.6, "max_new_tokens":2000})
+prompt_Template = ''' You are an educator, answering
+questions about stock market and related topics. You provide basic answers, in simple terms.
+Use the following pieces of information to answer the user's question.
+If you don't know the answer, just say that you don't know, don't try to make up an answer.
 
+Context: {context}
+Question: {question}
 
+Only return the helpful answer below and nothing else.
+Helpful answer:
 
-template = """
-You are an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the user's questions.
+'''
+# Prompt definition
+def setPrompt():
+    prompt = PromptTemplate(template = prompt_Template, input_variables=['context','question'])
 
-{question}
+    return prompt
 
-"""
+# Form a QnA Chain
+def retrievalQNA(llm,prompt,database):
+    qaChain = RetrievalQA.from_chain_type(llm=llm,
+                                          chain_type='stuff',
+                                          retriever = database.as_retriever(search_kwargs = {'k':2}),
+                                          return_source_documents=True,
+                                          chain_type_kwargs={'prompt':prompt}
+                                          )
+    return qaChain
 
+# Load LLM
+def loadLLM():
+    llm = CTransformers(
+        model="llama-2-7b-chat.ggmlv3.q8_0.bin",
+        model_type='llama',
+        max_new_tokens = 700,
+        temperature = 0.5
+    )
+    return llm
 
+# Final call QnA Bot
+def QnABot():
+    embeddings = HuggingFaceEmbeddings(model_name='sentence-transformers/all-MiniLM-L6-v2',
+                                       model_kwargs={'device': 'cpu'})  # Check Line 26
 
+    dataBase=FAISS.load_local(FaissPath,embeddings)
+    llm=loadLLM()
+    qaPrompt = setPrompt()
+    qa = retrievalQNA(llm,qaPrompt,dataBase)
+
+    return qa
+
+#Output
+def Results(query):
+    qa_result = QnABot()
+    response = qa_result({'query':query})
+    return response
+
+# Chainlit interface
 @cl.on_chat_start
 async def start():
-    prompt = PromptTemplate(template=template, input_variables=["question"])
-    llm_chain = LLMChain(prompt=prompt, llm=llm, verbose=True)
-    # Store the chain in the user session
-    cl.user_session.set("llm_chain", llm_chain)
+    chain = QnABot()
+    msg = cl.Message(content="Starting the bot...")
+    await msg.send()
+    msg.content = "Hi, Welcome to Fin-Ed Bot. What is your query?"
+    await msg.update()
+
+    cl.user_session.set("chain", chain)
 @cl.on_message
 async def main(message):
-    llm_chain = cl.user_session.get("llm_chain")
-    res = await llm_chain.acall(message, callbacks=[cl.AsyncLangchainCallbackHandler()])
-    await cl.Message(content=res["text"]).send()
+    chain = cl.user_session.get('chain')
+    cb = cl.AsyncLangchainCallbackHandler(stream_final_answer=True, answer_prefix_tokens=["FINAL", "ANSWER"])
+    cb.answer_reached=True
+    res = await chain.acall(message,callbacks=[cb])
+    answer = res['result']
+    sources = res['source_documents']
+
+    if sources:
+        answer += f"\nSources:"+str(sources)
+    else:
+        answer += "\nNo sources"
+    await cl.Message(content=answer).send()
