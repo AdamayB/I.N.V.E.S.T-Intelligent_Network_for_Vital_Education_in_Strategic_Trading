@@ -2,8 +2,8 @@ import wikipedia
 from transformers import pipeline
 import gradio as gr
 #tnc=input("Enter Terms and Conditions:")
-title='🦜️🔗GPT using GPT4ALL '
-description='This is an open source project. Created by Adamay Bhardwaj'
+title='Terms and Conditions Summarizer'
+description='Paste the terms and conditions here!!'
 summerizer=pipeline("summarization")
 
 tncTry='''These Terms of Service reflect the way Google’s business works, the laws that apply to our company, and certain things we’ve always believed to be true. As a result, these Terms of Service help define Google’s relationship with you as you interact with our services. For example, these terms include the following topic headings:
